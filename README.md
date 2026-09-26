@@ -18,13 +18,15 @@ As perguntas de negócio definidas foram:
 4. Quais CEPs de origem geraram maior receita?
 5. Existem problemas de qualidade nos dados brutos? Se sim, como foram tratados?
 
-## 2. Fonte e Coleta dos Dados
+## 2. Fonte, Licença e Coleta dos Dados
 
 A base utilizada foi a tabela pública:
 
 `samples.nyctaxi.trips`
 
 Essa base está disponível dentro do próprio ambiente Databricks e contém dados de corridas de táxi de Nova York.
+
+A escolha dessa base foi feita porque ela possui estrutura adequada para demonstrar um pipeline de dados na nuvem, com campos de data/hora, valores numéricos, localização de origem/destino e possibilidade de análise de qualidade dos dados.
 
 Principais campos utilizados:
 
@@ -39,9 +41,11 @@ Principais campos utilizados:
 
 A coleta foi realizada diretamente no Databricks, usando SQL, a partir da base pública `samples.nyctaxi.trips`.
 
-Não foi necessário disponibilizar os dados brutos no GitHub, pois a base utilizada já está disponível no ambiente Databricks.
+Quanto à licença/uso dos dados, a base foi utilizada exclusivamente para fins acadêmicos e didáticos, por estar disponível como dataset público de exemplo no próprio ambiente Databricks. Os dados brutos não foram redistribuídos neste repositório.
 
-## 3. Plataforma Utilizada
+Não foi necessário disponibilizar os dados brutos no GitHub, pois a base utilizada já está disponível no ambiente Databricks. O repositório contém o notebook com o código SQL utilizado, a documentação do projeto e as evidências de execução.
+
+## 3. Plataforma e Carga dos Dados
 
 A implementação foi realizada no:
 
@@ -52,6 +56,21 @@ A implementação foi realizada no:
 Arquivo principal do projeto:
 
 [`MVP_Pipeline_Dados_Nuvem_NYCTaxi_Marcela.ipynb`](prints_mvp_databricks/MVP_Pipeline_Dados_Nuvem_NYCTaxi_Marcela.ipynb)
+
+A carga dos dados foi realizada em ambiente de nuvem dentro do Databricks. A tabela pública `samples.nyctaxi.trips` foi consultada e seus dados foram persistidos em uma tabela própria do projeto chamada `bronze_trips`, dentro do schema `mvp_nyctaxi`.
+
+A partir da tabela Bronze, o pipeline criou uma tabela Silver com os dados tratados e tabelas Gold agregadas para análise.
+
+Resumo da carga e transformação:
+
+| Etapa | Tabela | Objetivo |
+|---|---|---|
+| Fonte | `samples.nyctaxi.trips` | Base pública original do Databricks |
+| Bronze | `bronze_trips` | Persistir os dados brutos no schema do MVP |
+| Silver | `silver_trips` | Aplicar filtros de qualidade e criar campos derivados |
+| Gold | `gold_daily_metrics` | Gerar indicadores diários |
+| Gold | `gold_pickup_zip_metrics` | Gerar indicadores por CEP de origem |
+| Gold | `gold_quality_summary` | Consolidar indicadores de qualidade dos dados |
 
 ## 4. Modelagem e Catálogo de Dados
 
@@ -192,14 +211,24 @@ Evidência das tabelas criadas:
 
 A análise inicial encontrou 21.932 registros na camada Bronze.
 
+Foram avaliados aspectos de completude, consistência, validade dos valores e impacto das regras de tratamento.
+
+### 6.1 Completude
+
 Não foram encontrados valores nulos nos campos principais analisados:
 
-- `trip_distance`
-- `fare_amount`
-- `pickup_zip`
-- `dropoff_zip`
+| Campo | Valores nulos |
+|---|---:|
+| `trip_distance` | 0 |
+| `fare_amount` | 0 |
+| `pickup_zip` | 0 |
+| `dropoff_zip` | 0 |
 
-Porém, foram encontrados problemas semânticos:
+Isso indica que, para os campos utilizados nas análises principais, não houve problema de completude.
+
+### 6.2 Consistência e validade dos valores
+
+Apesar de não haver valores nulos nos campos principais, foram encontrados problemas semânticos:
 
 | Problema | Quantidade |
 |---|---:|
@@ -208,15 +237,37 @@ Porém, foram encontrados problemas semânticos:
 | Tempo inválido | 1 |
 | Linhas removidas na Silver | 85 |
 
+Foram considerados inconsistentes os registros com:
+
+- distância menor ou igual a zero;
+- tarifa menor ou igual a zero;
+- horário de fim menor ou igual ao horário de início.
+
 A diferença entre o total de problemas identificados e o total de linhas removidas ocorre porque uma mesma linha pode apresentar mais de um problema.
 
-Regra aplicada na camada Silver:
+### 6.3 Regra aplicada na camada Silver
+
+As regras aplicadas para manter apenas corridas válidas foram:
 
 `trip_distance > 0`
 
 `fare_amount > 0`
 
 `tpep_dropoff_datetime > tpep_pickup_datetime`
+
+Após a aplicação dessas regras, a base passou de 21.932 registros na Bronze para 21.847 registros na Silver.
+
+### 6.4 Unicidade e limitações
+
+A base utilizada não possui um identificador único explícito de corrida, como um `trip_id`. Por isso, a avaliação de unicidade foi limitada ao contexto dos campos disponíveis.
+
+Como decisão de modelagem, não foi criada uma chave artificial para remoção de duplicidades, pois o objetivo principal do MVP foi demonstrar o fluxo de ingestão, tratamento, modelagem e análise em nuvem. Para uma evolução futura, poderia ser criada uma chave técnica combinando data/hora de início, data/hora de fim, distância, tarifa, CEP de origem e CEP de destino.
+
+### 6.5 Outliers e valores extremos
+
+Também foram observados valores extremos na exploração inicial, como tarifa máxima de 275 e distância máxima de 30,6. Esses valores não foram removidos automaticamente, pois podem representar corridas longas ou situações reais de maior valor.
+
+Neste MVP, foram removidos apenas registros claramente inválidos para as perguntas de negócio: distância zero/negativa, tarifa zero/negativa e tempo inválido.
 
 Evidência da análise de qualidade:
 
@@ -257,6 +308,10 @@ Top 3 dias por volume:
 | 1º | 2016-02-11 | 456 |
 | 2º | 2016-01-30 | 451 |
 | 3º | 2016-02-26 | 450 |
+
+Interpretação:
+
+O maior volume diário ocorreu em 2016-02-11, com 456 corridas válidas. Esse resultado indica o dia com maior demanda registrada no período analisado.
 
 Evidência:
 
@@ -304,23 +359,35 @@ O objetivo principal do MVP foi atingido: construir um pipeline de dados funcion
 Foram realizadas as etapas de:
 
 - definição do problema de negócio;
-- seleção de uma base pública;
-- carga dos dados em tabela Bronze;
+- definição das perguntas que o pipeline deveria responder;
+- seleção de uma base pública compatível com o objetivo;
+- coleta dos dados diretamente no Databricks;
+- persistência dos dados em tabela Bronze;
 - tratamento e criação da camada Silver;
 - criação de tabelas Gold agregadas;
 - análise de qualidade dos dados;
 - resposta às perguntas de negócio;
-- documentação dos resultados no GitHub.
+- documentação do processo e dos resultados no GitHub.
 
-A principal dificuldade foi o primeiro contato com o Databricks, pois a ferramenta era nova para mim. Mesmo assim, foi possível construir o fluxo completo usando SQL e documentar as principais etapas do processo.
+O projeto conseguiu demonstrar o fluxo completo de um pipeline de dados: saída de uma fonte bruta, organização em camadas, tratamento dos dados, criação de tabelas analíticas e geração de respostas para perguntas de negócio.
+
+A principal dificuldade foi o primeiro contato com o Databricks, pois a ferramenta era nova para mim. Ainda assim, foi possível utilizar a plataforma em nuvem, criar tabelas persistidas, executar consultas SQL e exportar o notebook para documentação no GitHub.
+
+Como limitações do MVP, destaco:
+
+- a base utilizada já estava disponível no ambiente Databricks, então não foi necessário construir uma ingestão externa por API ou upload manual;
+- a análise de unicidade foi limitada pela ausência de um identificador único de corrida;
+- não foram construídos dashboards, pois o foco principal foi o pipeline e a documentação das etapas;
+- os outliers foram apenas avaliados de forma exploratória, sem remoção automática, para evitar exclusão indevida de corridas possivelmente válidas.
 
 Como trabalho futuro, seria possível enriquecer o projeto com:
 
-- dados de localização mais detalhados;
+- criação de uma chave técnica para análise de duplicidade;
 - análise por dia da semana e faixa horária;
 - criação de dashboards no Databricks;
 - comparação entre diferentes meses;
-- inclusão de novas fontes de dados externas.
+- inclusão de fontes externas;
+- automação do pipeline em uma rotina agendada.
 
 ## 9. Estrutura do Repositório
 
